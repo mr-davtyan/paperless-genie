@@ -10,7 +10,7 @@ Adhere to these rules when updating this document:
 7. Output a final report describing what actions were done.
 
 IMPORTANT LANGUAGE RULE:
-- Detect the language of the document's content and write the note and report in that same language.
+- Detect the language of the document's content and write the note and report in that same language. If the language is ambiguous or unclear, default to English.
 
 IMPORTANT FORMATTING RULES:
 - The response will be sent as a Telegram message. Do NOT use markdown links with URLs. Do NOT include any file:// or http:// links in the response.

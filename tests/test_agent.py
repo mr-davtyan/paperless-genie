@@ -151,6 +151,7 @@ def test_search_prompt_requires_id_marker_format(monkeypatch: pytest.MonkeyPatch
     instructions = agent_module.get_search_instructions()
     assert "[#ID]" in instructions
     assert "same language the user writes in" in instructions
+    assert "default to English" in instructions
 
 
 def test_custom_prompt_loading_overrides_defaults(
