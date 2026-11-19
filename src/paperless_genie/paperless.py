@@ -56,7 +56,9 @@ class PaperlessTask(BaseModel):
 
     status: str = ""
     related_document: int | None = None
+    related_document_ids: list[int] | None = None
     result: str | None = None
+    result_data: dict[str, object] | None = None
 
 
 def _parse_task_id(response: httpx.Response) -> str:
@@ -103,11 +105,25 @@ def _normalize_tasks(task_data: object) -> list[dict[str, object]]:
     return []
 
 
+def _coerce_int(value: object) -> int | None:
+    """Converts an integer or non-negative numeric string to ``int``, else ``None``."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return None
+
+
 def _extract_document_id(task: PaperlessTask) -> int | None:
     """Returns the created document ID from a succeeded task, or None.
 
-    Prefers the structured ``related_document`` field and falls back to
-    parsing it out of the free-text result.
+    Checks the v9 ``related_document`` field, v10 ``related_document_ids`` and
+    ``result_data['document_id']`` fields, and finally falls back to parsing
+    the legacy free-text ``result``.
 
     Args:
         task: A task whose status is SUCCESS.
@@ -117,8 +133,46 @@ def _extract_document_id(task: PaperlessTask) -> int | None:
     """
     if task.related_document is not None:
         return task.related_document
+    if task.related_document_ids:
+        return task.related_document_ids[0]
+    if task.result_data:
+        doc_id = _coerce_int(task.result_data.get("document_id"))
+        if doc_id is not None:
+            return doc_id
     match = re.search(r"document id (\d+) created", task.result or "", re.IGNORECASE)
     return int(match.group(1)) if match else None
+
+
+def _extract_failure_message(task: PaperlessTask) -> str:
+    """Extracts a human-readable failure message from a v9 or v10 task record."""
+    if task.result:
+        return task.result
+    if task.result_data:
+        for key in ("error_message", "reason"):
+            value = task.result_data.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return str(task.result_data)
+    return ""
+
+
+def _extract_task_duplicate_id(task: PaperlessTask) -> int | None:
+    """Returns the duplicate document ID from a failed task, or None.
+
+    Checks v10 ``result_data['duplicate_of']`` first, then falls back to
+    parsing free-text messages in ``result`` or ``result_data``.
+
+    Args:
+        task: A failed task record.
+
+    Returns:
+        The referenced duplicate document ID, or None if not a duplicate.
+    """
+    if task.result_data:
+        dup_id = _coerce_int(task.result_data.get("duplicate_of"))
+        if dup_id is not None:
+            return dup_id
+    return _extract_duplicate_id(_extract_failure_message(task))
 
 
 def _extract_duplicate_id(result_text: str) -> int | None:
@@ -279,14 +333,14 @@ class PaperlessClient:
                         return doc_id
                     raise ValueError(
                         f"Task succeeded but related_document ID not found. "
-                        f"Result: {task.result or ''}"
+                        f"Result: {task.result or task.result_data or ''}"
                     )
 
                 if status in ("FAILED", "FAILURE"):
-                    result_text = task.result or ""
-                    duplicate_id = _extract_duplicate_id(result_text)
+                    duplicate_id = _extract_task_duplicate_id(task)
                     if duplicate_id is not None:
                         raise DuplicateDocumentError(doc_id=duplicate_id)
+                    result_text = _extract_failure_message(task)
                     raise ValueError(f"Document processing failed: {result_text}")
 
             raise TimeoutError("Timed out waiting for document processing / OCR to complete.")

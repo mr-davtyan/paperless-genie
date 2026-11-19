@@ -74,6 +74,23 @@ def test_extract_document_id_none_when_unavailable() -> None:
     assert _extract_document_id(PaperlessTask(status="SUCCESS", result="done")) is None
 
 
+def test_extract_document_id_from_v10_related_document_ids() -> None:
+    task = PaperlessTask(status="success", related_document_ids=[245])
+    assert _extract_document_id(task) == 245
+
+
+def test_extract_document_id_from_v10_result_data() -> None:
+    task = PaperlessTask(
+        status="success", related_document_ids=[], result_data={"document_id": 245}
+    )
+    assert _extract_document_id(task) == 245
+
+
+def test_extract_document_id_ignores_bool_in_result_data() -> None:
+    task = PaperlessTask(status="success", result_data={"document_id": True})
+    assert _extract_document_id(task) is None
+
+
 def test_extract_duplicate_id_hash_pattern() -> None:
     assert _extract_duplicate_id("It is a duplicate of #416.") == 416
 
@@ -241,4 +258,73 @@ async def test_upload_times_out_when_never_ready() -> None:
     with pytest.raises(TimeoutError):
         await _client().upload_and_wait_for_ocr(
             file_bytes=b"x", file_name="x.pdf", max_wait=0.05, poll_interval=0.01
+        )
+
+
+@respx.mock
+async def test_upload_success_v10_payload_returns_document_id() -> None:
+    respx.post(f"{BASE}/api/documents/post_document/").mock(return_value=_response("task-1"))
+    respx.get(url__startswith=f"{BASE}/api/tasks/").mock(
+        return_value=_response(
+            {
+                "count": 1,
+                "results": [
+                    {
+                        "status": "success",
+                        "related_document_ids": [245],
+                        "result_data": {"document_id": 245},
+                    }
+                ],
+            }
+        )
+    )
+    doc_id = await _client().upload_and_wait_for_ocr(
+        file_bytes=b"x", file_name="scan.pdf", poll_interval=0.01
+    )
+    assert doc_id == 245
+
+
+@respx.mock
+async def test_upload_duplicate_v10_raises_with_existing_id() -> None:
+    respx.post(f"{BASE}/api/documents/post_document/").mock(return_value=_response("task-1"))
+    respx.get(url__startswith=f"{BASE}/api/tasks/").mock(
+        return_value=_response(
+            {
+                "count": 1,
+                "results": [
+                    {
+                        "status": "failure",
+                        "related_document_ids": [],
+                        "result_data": {"duplicate_of": 416},
+                    }
+                ],
+            }
+        )
+    )
+    with pytest.raises(DuplicateDocumentError) as exc:
+        await _client().upload_and_wait_for_ocr(
+            file_bytes=b"x", file_name="x.pdf", poll_interval=0.01
+        )
+    assert exc.value.doc_id == 416
+
+
+@respx.mock
+async def test_upload_failure_v10_raises_with_error_message() -> None:
+    respx.post(f"{BASE}/api/documents/post_document/").mock(return_value=_response("task-1"))
+    respx.get(url__startswith=f"{BASE}/api/tasks/").mock(
+        return_value=_response(
+            {
+                "count": 1,
+                "results": [
+                    {
+                        "status": "failure",
+                        "result_data": {"error_message": "OCR engine exploded"},
+                    }
+                ],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="Document processing failed: OCR engine exploded"):
+        await _client().upload_and_wait_for_ocr(
+            file_bytes=b"x", file_name="x.pdf", poll_interval=0.01
         )
